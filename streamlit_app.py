@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from sklearn.ensemble import RandomForestRegressor
+from datetime import datetime, timedelta
 
 # ==========================================
 # 1. 페이지 기본 설정 및 디자인
@@ -17,9 +19,32 @@ st.markdown("매일 변동하는 **원/달러 환율**을 분석하여 미래 **
 st.write("---")
 
 # ==========================================
-# 2. 내장 데이터 세팅 (사용자 제공 데이터 가공)
+# 2. 실시간 야후 파이낸스 환율 데이터 로드
 # ==========================================
-# 2022.05 ~ 2026.05 전국 소비자물가지수 원본 데이터 백엔드 탑재
+@st.cache_data(ttl=600) # 10분마다 갱신
+def get_realtime_fx():
+    try:
+        # KRW=X 는 야후 파이낸스의 달러/원 환율 티커입니다.
+        ticker = yf.Ticker("KRW=X")
+        # 최근 3개월 일별 데이터 로드
+        recent_daily_fx = ticker.history(period="3mo")
+        # 과거 5년치 월별 데이터 로드 (AI 학습용)
+        history_fx = ticker.history(period="5y")
+        
+        latest_price = recent_daily_fx['Close'].iloc[-1]
+        prev_price = recent_daily_fx['Close'].iloc[-2]
+        price_change = latest_price - prev_price
+        
+        return recent_daily_fx[['Close']], history_fx, latest_price, price_change
+    except Exception as e:
+        # API 오류 시 대체용 기본값
+        return pd.DataFrame(), pd.DataFrame(), 1380.0, 0.0
+
+recent_fx_df, history_fx_df, current_real_fx, fx_change = get_realtime_fx()
+
+# ==========================================
+# 3. 내장 데이터 및 AI 모델 학습 레이어
+# ==========================================
 cpi_dict = {
     "2022-05-01": 107.50, "2022-06-01": 108.21, "2022-07-01": 108.73, "2022-08-01": 108.63, "2022-09-01": 108.82, "2022-10-01": 109.16, "2022-11-01": 109.07, "2022-12-01": 109.26,
     "2023-01-01": 110.07, "2023-02-01": 110.33, "2023-03-01": 110.52, "2023-04-01": 110.77, "2023-05-01": 111.13, "2023-06-01": 111.16, "2023-07-01": 111.29, "2023-08-01": 112.28, "2023-09-01": 112.85, "2023-10-01": 113.27, "2023-11-01": 112.68, "2023-12-01": 112.73,
@@ -29,14 +54,23 @@ cpi_dict = {
 }
 
 @st.cache_resource 
-def load_and_train_model():
+def load_and_train_model(history_fx_data):
     dates = pd.to_datetime(list(cpi_dict.keys()))
     cpi_values = list(cpi_dict.values())
+    df = pd.DataFrame({"CPI": cpi_values}, index=dates)
     
-    np.random.seed(42)
-    fx_values = np.random.normal(1360, 40, len(dates))
-    
-    df = pd.DataFrame({"USD_KRW": fx_values, "CPI": cpi_values}, index=dates)
+    # 실제 야후 파이낸스 과거 데이터 병합
+    if not history_fx_data.empty:
+        # 타임존 정보 제거 및 월별 첫 영업일 데이터로 리샘플링
+        fx_hist = history_fx_data.copy()
+        fx_hist.index = fx_hist.index.tz_localize(None)
+        fx_monthly = fx_hist['Close'].resample('MS').first()
+        df["USD_KRW"] = fx_monthly.reindex(df.index).ffill().bfill()
+    else:
+        # 야후 통신 실패 시 더미 데이터 사용 (안전 장치)
+        np.random.seed(42)
+        df["USD_KRW"] = np.random.normal(1360, 40, len(dates))
+        
     df["FX_Change_MoM"] = df["USD_KRW"].pct_change() * 100
     df["CPI_Change_MoM"] = df["CPI"].pct_change() * 100
     
@@ -55,23 +89,57 @@ def load_and_train_model():
     
     return model, df["USD_KRW"].mean(), df["USD_KRW"].std(), df
 
-model, fx_mean, fx_std, df_master = load_and_train_model()
+model, fx_mean, fx_std, df_master = load_and_train_model(history_fx_df)
 
 # ==========================================
-# 3. 사이드바 (사용자 입력 컨트롤러)
+# 4. 실시간 시장 상황 UI
 # ==========================================
-st.sidebar.header("🎛️ 실시간 데이터 입력")
-st.sidebar.markdown("현재 시장의 실시간 지표를 설정하세요.")
+st.subheader("🌐 실시간 외환 시장 동향 (Yahoo Finance 연동)")
+col_market1, col_market2 = st.columns([1, 3])
 
-current_fx = st.sidebar.slider("오늘의 일별 원/달러 환율 (원)", min_value=1200.0, max_value=1600.0, value=1395.0, step=0.5)
+with col_market1:
+    st.metric(
+        label="현재 원/달러 환율 (실시간)", 
+        value=f"{current_real_fx:,.2f} 원", 
+        delta=f"{fx_change:,.2f} 원 (전일대비)",
+        delta_color="inverse" # 환율은 오르면 빨간색(악재), 내리면 파란색(호재)가 보통이므로 반전 적용
+    )
+    st.caption("※ 약 10분 주기로 야후 파이낸스 데이터를 갱신합니다.")
+
+with col_market2:
+    if not recent_fx_df.empty:
+        # 차트 가시성을 높이기 위해 컬럼명 변경
+        recent_fx_df.columns = ['실시간 원/달러 환율 추이']
+        st.line_chart(recent_fx_df, height=150, color="#EF4444")
+    else:
+        st.info("현재 실시간 데이터를 불러올 수 없습니다.")
+
+st.write("---")
+
+# ==========================================
+# 5. 사이드바 (사용자 입력 컨트롤러)
+# ==========================================
+st.sidebar.header("🎛️ AI 시뮬레이터 (사용자 설정)")
+st.sidebar.markdown("현재 실시간 환율이 기본값으로 세팅되어 있습니다. 슬라이더를 움직여 **환율이 더 오르거나 내릴 경우**를 시뮬레이션 해보세요.")
+
+# 야후 파이낸스에서 불러온 실시간 환율을 슬라이더 기본값으로 자동 대입
+current_fx = st.sidebar.slider(
+    "오늘의 일별 원/달러 환율 (원)", 
+    min_value=1200.0, max_value=1600.0, 
+    value=float(current_real_fx), 
+    step=0.5
+)
 
 st.sidebar.subheader("최근 3개월간 월평균 환율 추이")
-lag_1 = st.sidebar.slider("1달 전 환율 변동률 (%)", -5.0, 5.0, 1.2, 0.1)
-lag_2 = st.sidebar.slider("2달 전 환율 변동률 (%)", -5.0, 5.0, -0.5, 0.1)
-lag_3 = st.sidebar.slider("3달 전 환율 변동률 (%)", -5.0, 5.0, 2.0, 0.1)
+# 실제 df_master에서 최근 3개월 변동률을 추출하여 기본값으로 대입
+recent_lags = df_master["FX_Change_MoM"].iloc[-3:].values[::-1] # 최근 1, 2, 3개월 전 순서
+
+lag_1 = st.sidebar.slider("1달 전 환율 변동률 (%)", -5.0, 5.0, float(recent_lags[0]), 0.1)
+lag_2 = st.sidebar.slider("2달 전 환율 변동률 (%)", -5.0, 5.0, float(recent_lags[1]), 0.1)
+lag_3 = st.sidebar.slider("3달 전 환율 변동률 (%)", -5.0, 5.0, float(recent_lags[2]), 0.1)
 
 # ==========================================
-# 4. 분석 엔진 연산 레이어
+# 6. 분석 엔진 연산 레이어
 # ==========================================
 input_features = pd.DataFrame([[lag_1, lag_2, lag_3]], columns=['FX_Lag_1', 'FX_Lag_2', 'FX_Lag_3'])
 predicted_cpi_inflation = model.predict(input_features)[0]
@@ -80,14 +148,13 @@ z_score = (current_fx - fx_mean) / fx_std
 base_score = 50
 total_score = np.clip(base_score + (z_score * 12) + (predicted_cpi_inflation * 45), 0, 100)
 
-# 💡 추가된 로직: 다음 달 예상 소비자물가지수(절댓값) 연산
 latest_date = df_master.index[-1]
 next_month_str = (latest_date + pd.DateOffset(months=1)).strftime("%Y년 %m월")
 latest_cpi_value = df_master["CPI"].iloc[-1]
 expected_next_cpi = latest_cpi_value * (1 + (predicted_cpi_inflation / 100))
 
 # ==========================================
-# 5. 프론트엔드 UI/UX 대시보드 화면 시각화
+# 7. 프론트엔드 UI/UX 대시보드 화면 시각화
 # ==========================================
 col1, col2 = st.columns([1, 1])
 
@@ -109,18 +176,18 @@ with col1:
 
     st.markdown(f"**진단 결과:** {status_desc}")
     
-    # 💡 추가된 UI: % 변동률과 함께 계산된 다음 달 예측 지수를 표시합니다.
     st.metric(
-        label=f"AI 예측: {next_month_str} 예상 소비자물가지수", 
+        label=f"🤖 AI 예측: {next_month_str} 예상 소비자물가지수", 
         value=f"{expected_next_cpi:.2f}", 
-        delta=f"예상 상승률: {predicted_cpi_inflation:.3f} %"
+        delta=f"예상 상승률: {predicted_cpi_inflation:.3f} %",
+        delta_color="inverse" # 물가가 오르는 것은 사용자 입장에서 악재
     )
 
 with col2:
     st.subheader("💡 카테고리별 스마트 쇼핑 가이드")
     
     if total_score >= 65:
-        st.info("✈️ **해외직구 / 전자기기 / 항공권**\n\n장바구니에 담아둔 직구 상품이나 노트북, 해외 여행 상품은 **오늘 결제하는 것이 가장 저렴**합니다. 수개월 내 물량 인상분이 반영됩니다.")
+        st.info("✈️ **해외직구 / 전자기기 / 항공권**\n\n장바구니에 담아둔 직구 상품이나 노트북, 해외 여행 상품은 **오늘 결제하는 가장 저렴**합니다. 수개월 내 물량 인상분이 반영됩니다.")
         st.info("🛒 **대형마트 생필품 / 밀가루·가공식품**\n\n원자재 수입가 인상 전, 대형마트의 기획전이나 묶음 할인 상품을 활용해 **생활 필수품을 미리 확보(쟁여두기)**하는 것이 지출을 방어하는 길입니다.")
     elif total_score <= 35:
         st.info("✈️ **해외직구 / 전자기기 / 항공권**\n\n**지출을 당장 미루세요!** 1~2달 뒤 환율 하락 효과가 커머스 및 여행 가격에 직접 반영되어 예산을 대폭 아낄 수 있습니다.")
@@ -130,11 +197,11 @@ with col2:
         st.info("🛒 **대형마트 생필품 / 밀가루·가공식품**\n\n정상적인 소비 주기를 유지하세요. 특이 가격 변동 리스크가 낮습니다.")
 
 st.write("---")
-st.subheader("📈 백엔드 시계열 데이터 트렌드 조회 (2022.05 ~ 2026.05)")
+st.subheader("📈 백엔드 시계열 데이터 트렌드 조회 (AI 학습용 실데이터)")
 
 chart_data = df_master[['USD_KRW', 'CPI']].copy()
 chart_data['환율 추이(정규화)'] = (chart_data['USD_KRW'] - chart_data['USD_KRW'].mean()) / chart_data['USD_KRW'].std()
 chart_data['소비자물가 추이(정규화)'] = (chart_data['CPI'] - chart_data['CPI'].mean()) / chart_data['CPI'].std()
 
 st.line_chart(chart_data[['환율 추이(정규화)', '소비자물가 추이(정규화)']])
-st.caption("※ 분석 이해를 돕기 위해 두 지표의 단위를 맞춰 정규화(Standardized)한 추이 그래프입니다. 환율의 고점/저점이 발생한 후 수 개월 뒤 물가지수가 자극받는 시차 양상을 한눈에 파악할 수 있습니다.")
+st.caption("※ 야후 파이낸스의 실제 과거 환율 데이터와 소비자물가지수를 표준화(Standardized)한 추이 그래프입니다. 환율 충격 발생 후 수 개월 뒤 물가지수가 어떻게 변하는지 AI가 학습한 데이터를 시각화했습니다.")
