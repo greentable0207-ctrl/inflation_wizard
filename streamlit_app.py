@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -29,7 +28,8 @@ cpi_dict = {
     "2026-01-01": 118.03, "2026-02-01": 118.40, "2026-03-01": 118.80, "2026-04-01": 119.37, "2026-05-01": 119.92
 }
 
-@st.cache_data
+# 머신러닝 모델, DB 연결과 같은 객체는 cache_data가 아닌 cache_resource를 사용해야 에러가 나지 않습니다.
+@st.cache_resource 
 def load_and_train_model():
     # 시계열 인덱스 매핑 및 학습용 가상 데이터셋 동기화 생성
     dates = pd.to_datetime(list(cpi_dict.keys()))
@@ -79,9 +79,9 @@ lag_3 = st.sidebar.slider("3달 전 환율 변동률 (%)", -5.0, 5.0, 2.0, 0.1)
 # ==========================================
 # 4. 분석 엔진 연산 레이어
 # ==========================================
-# 입력값을 바탕으로 비선형 물가 전이율 연산
-input_features = [lag_1, lag_2, lag_3]
-predicted_cpi_inflation = model.predict([input_features])[0]
+# 경고(Warning) 발생을 방지하기 위해 입력값을 DataFrame으로 변환 후 모델 예측에 대입
+input_features = pd.DataFrame([[lag_1, lag_2, lag_3]], columns=['FX_Lag_1', 'FX_Lag_2', 'FX_Lag_3'])
+predicted_cpi_inflation = model.predict(input_features)[0]
 
 # 스코어링 시스템 구축
 z_score = (current_fx - fx_mean) / fx_std
