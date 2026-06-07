@@ -28,31 +28,26 @@ cpi_dict = {
     "2026-01-01": 118.03, "2026-02-01": 118.40, "2026-03-01": 118.80, "2026-04-01": 119.37, "2026-05-01": 119.92
 }
 
-# 머신러닝 모델, DB 연결과 같은 객체는 cache_data가 아닌 cache_resource를 사용해야 에러가 나지 않습니다.
 @st.cache_resource 
 def load_and_train_model():
-    # 시계열 인덱스 매핑 및 학습용 가상 데이터셋 동기화 생성
     dates = pd.to_datetime(list(cpi_dict.keys()))
     cpi_values = list(cpi_dict.values())
     
     np.random.seed(42)
-    # 실제 과거 환율 트렌드 반영 구조화 (평균 1350원선 추이)
     fx_values = np.random.normal(1360, 40, len(dates))
     
     df = pd.DataFrame({"USD_KRW": fx_values, "CPI": cpi_values}, index=dates)
     df["FX_Change_MoM"] = df["USD_KRW"].pct_change() * 100
     df["CPI_Change_MoM"] = df["CPI"].pct_change() * 100
     
-    # 시차(Lag) 독립변수 생성
     feature_cols = []
-    for lag in range(1, 4): # 메모리 효율을 위해 1~3개월 선행 시차 반영
+    for lag in range(1, 4):
         col = f"FX_Lag_{lag}"
         df[col] = df["FX_Change_MoM"].shift(lag)
         feature_cols.append(col)
     
     df = df.dropna()
     
-    # 머신러닝 모델 학습
     X = df[feature_cols]
     y = df["CPI_Change_MoM"]
     model = RandomForestRegressor(n_estimators=50, random_state=42)
@@ -68,7 +63,6 @@ model, fx_mean, fx_std, df_master = load_and_train_model()
 st.sidebar.header("🎛️ 실시간 데이터 입력")
 st.sidebar.markdown("현재 시장의 실시간 지표를 설정하세요.")
 
-# 사용자가 마우스로 실시간 환율 조절 가능
 current_fx = st.sidebar.slider("오늘의 일별 원/달러 환율 (원)", min_value=1200.0, max_value=1600.0, value=1395.0, step=0.5)
 
 st.sidebar.subheader("최근 3개월간 월평균 환율 추이")
@@ -79,14 +73,18 @@ lag_3 = st.sidebar.slider("3달 전 환율 변동률 (%)", -5.0, 5.0, 2.0, 0.1)
 # ==========================================
 # 4. 분석 엔진 연산 레이어
 # ==========================================
-# 경고(Warning) 발생을 방지하기 위해 입력값을 DataFrame으로 변환 후 모델 예측에 대입
 input_features = pd.DataFrame([[lag_1, lag_2, lag_3]], columns=['FX_Lag_1', 'FX_Lag_2', 'FX_Lag_3'])
 predicted_cpi_inflation = model.predict(input_features)[0]
 
-# 스코어링 시스템 구축
 z_score = (current_fx - fx_mean) / fx_std
 base_score = 50
 total_score = np.clip(base_score + (z_score * 12) + (predicted_cpi_inflation * 45), 0, 100)
+
+# 💡 추가된 로직: 다음 달 예상 소비자물가지수(절댓값) 연산
+latest_date = df_master.index[-1]
+next_month_str = (latest_date + pd.DateOffset(months=1)).strftime("%Y년 %m월")
+latest_cpi_value = df_master["CPI"].iloc[-1]
+expected_next_cpi = latest_cpi_value * (1 + (predicted_cpi_inflation / 100))
 
 # ==========================================
 # 5. 프론트엔드 UI/UX 대시보드 화면 시각화
@@ -110,7 +108,13 @@ with col1:
         status_desc = "현재 정상 범위 내의 거시경제 변동성을 보이고 있습니다. 무리한 소비나 미룸 없이 정석적인 계획 지출을 권장합니다."
 
     st.markdown(f"**진단 결과:** {status_desc}")
-    st.metric(label="미래 예측 월간 인플레이션 압력", value=f"{predicted_cpi_inflation:.3f} %")
+    
+    # 💡 추가된 UI: % 변동률과 함께 계산된 다음 달 예측 지수를 표시합니다.
+    st.metric(
+        label=f"AI 예측: {next_month_str} 예상 소비자물가지수", 
+        value=f"{expected_next_cpi:.2f}", 
+        delta=f"예상 상승률: {predicted_cpi_inflation:.3f} %"
+    )
 
 with col2:
     st.subheader("💡 카테고리별 스마트 쇼핑 가이드")
@@ -128,9 +132,7 @@ with col2:
 st.write("---")
 st.subheader("📈 백엔드 시계열 데이터 트렌드 조회 (2022.05 ~ 2026.05)")
 
-# 시각화용 차트 라인업
 chart_data = df_master[['USD_KRW', 'CPI']].copy()
-# 스케일이 다르므로 표준화하여 트렌드 비교 시각화
 chart_data['환율 추이(정규화)'] = (chart_data['USD_KRW'] - chart_data['USD_KRW'].mean()) / chart_data['USD_KRW'].std()
 chart_data['소비자물가 추이(정규화)'] = (chart_data['CPI'] - chart_data['CPI'].mean()) / chart_data['CPI'].std()
 
