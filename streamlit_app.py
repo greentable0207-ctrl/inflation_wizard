@@ -26,9 +26,7 @@ def get_realtime_fx():
     try:
         # KRW=X 는 야후 파이낸스의 달러/원 환율 티커입니다.
         ticker = yf.Ticker("KRW=X")
-        # 최근 3개월 일별 데이터 로드
         recent_daily_fx = ticker.history(period="3mo")
-        # 과거 5년치 월별 데이터 로드 (AI 학습용)
         history_fx = ticker.history(period="5y")
         
         latest_price = recent_daily_fx['Close'].iloc[-1]
@@ -37,7 +35,6 @@ def get_realtime_fx():
         
         return recent_daily_fx[['Close']], history_fx, latest_price, price_change
     except Exception as e:
-        # API 오류 시 대체용 기본값
         return pd.DataFrame(), pd.DataFrame(), 1380.0, 0.0
 
 recent_fx_df, history_fx_df, current_real_fx, fx_change = get_realtime_fx()
@@ -59,15 +56,12 @@ def load_and_train_model(history_fx_data):
     cpi_values = list(cpi_dict.values())
     df = pd.DataFrame({"CPI": cpi_values}, index=dates)
     
-    # 실제 야후 파이낸스 과거 데이터 병합
     if not history_fx_data.empty:
-        # 타임존 정보 제거 및 월별 첫 영업일 데이터로 리샘플링
         fx_hist = history_fx_data.copy()
         fx_hist.index = fx_hist.index.tz_localize(None)
         fx_monthly = fx_hist['Close'].resample('MS').first()
         df["USD_KRW"] = fx_monthly.reindex(df.index).ffill().bfill()
     else:
-        # 야후 통신 실패 시 더미 데이터 사용 (안전 장치)
         np.random.seed(42)
         df["USD_KRW"] = np.random.normal(1360, 40, len(dates))
         
@@ -102,13 +96,12 @@ with col_market1:
         label="현재 원/달러 환율 (실시간)", 
         value=f"{current_real_fx:,.2f} 원", 
         delta=f"{fx_change:,.2f} 원 (전일대비)",
-        delta_color="inverse" # 환율은 오르면 빨간색(악재), 내리면 파란색(호재)가 보통이므로 반전 적용
+        delta_color="inverse"
     )
     st.caption("※ 약 10분 주기로 야후 파이낸스 데이터를 갱신합니다.")
 
 with col_market2:
     if not recent_fx_df.empty:
-        # 차트 가시성을 높이기 위해 컬럼명 변경
         recent_fx_df.columns = ['실시간 원/달러 환율 추이']
         st.line_chart(recent_fx_df, height=150, color="#EF4444")
     else:
@@ -122,7 +115,6 @@ st.write("---")
 st.sidebar.header("🎛️ AI 시뮬레이터 (사용자 설정)")
 st.sidebar.markdown("현재 실시간 환율이 기본값으로 세팅되어 있습니다. 슬라이더를 움직여 **환율이 더 오르거나 내릴 경우**를 시뮬레이션 해보세요.")
 
-# 야후 파이낸스에서 불러온 실시간 환율을 슬라이더 기본값으로 자동 대입
 current_fx = st.sidebar.slider(
     "오늘의 일별 원/달러 환율 (원)", 
     min_value=1200.0, max_value=1600.0, 
@@ -131,8 +123,7 @@ current_fx = st.sidebar.slider(
 )
 
 st.sidebar.subheader("최근 3개월간 월평균 환율 추이")
-# 실제 df_master에서 최근 3개월 변동률을 추출하여 기본값으로 대입
-recent_lags = df_master["FX_Change_MoM"].iloc[-3:].values[::-1] # 최근 1, 2, 3개월 전 순서
+recent_lags = df_master["FX_Change_MoM"].iloc[-3:].values[::-1]
 
 lag_1 = st.sidebar.slider("1달 전 환율 변동률 (%)", -5.0, 5.0, float(recent_lags[0]), 0.1)
 lag_2 = st.sidebar.slider("2달 전 환율 변동률 (%)", -5.0, 5.0, float(recent_lags[1]), 0.1)
@@ -163,15 +154,12 @@ with col1:
     
     if total_score >= 65:
         st.error(f"## **{total_score:.1f}점 / 🚨 비상: 지금 사야 이득**")
-        status_color = "red"
         status_desc = "현재 고환율 기조 및 누적된 과거 환율 충격으로 인해 수 개월 내 수입 물가와 소비자 가격이 크게 상승할 위험이 포착되었습니다."
     elif total_score <= 35:
         st.success(f"## **{total_score:.1f}점 / 🍏 관망: 나중에 사야 이득**")
-        status_color = "green"
         status_desc = "환율이 안정세에 접어들었습니다. 전이 시차 효과로 인해 수 개월 뒤 소비재 가격이 인하되거나 안정화될 가능성이 매우 높습니다."
     else:
         st.warning(f"## **{total_score:.1f}점 / 🟡 안정: 계획 소비**")
-        status_color = "blue"
         status_desc = "현재 정상 범위 내의 거시경제 변동성을 보이고 있습니다. 무리한 소비나 미룸 없이 정석적인 계획 지출을 권장합니다."
 
     st.markdown(f"**진단 결과:** {status_desc}")
@@ -180,21 +168,40 @@ with col1:
         label=f"🤖 AI 예측: {next_month_str} 예상 소비자물가지수", 
         value=f"{expected_next_cpi:.2f}", 
         delta=f"예상 상승률: {predicted_cpi_inflation:.3f} %",
-        delta_color="inverse" # 물가가 오르는 것은 사용자 입장에서 악재
+        delta_color="inverse"
     )
 
 with col2:
-    st.subheader("💡 카테고리별 스마트 쇼핑 가이드")
+    st.subheader("💡 4대 핵심 카테고리 소비 가이드")
     
+    # 💡 세분화된 4가지 스마트 쇼핑 가이드 (여행, IT기기, 식료품, 주유)
     if total_score >= 65:
-        st.info("✈️ **해외직구 / 전자기기 / 항공권**\n\n장바구니에 담아둔 직구 상품이나 노트북, 해외 여행 상품은 **오늘 결제하는 가장 저렴**합니다. 수개월 내 물량 인상분이 반영됩니다.")
-        st.info("🛒 **대형마트 생필품 / 밀가루·가공식품**\n\n원자재 수입가 인상 전, 대형마트의 기획전이나 묶음 할인 상품을 활용해 **생활 필수품을 미리 확보(쟁여두기)**하는 것이 지출을 방어하는 길입니다.")
+        st.error("""
+        **🚨 핵심 지침: 지출을 앞당기세요 (지금 사야 이득)**
+        
+        * ✈️ **해외여행 및 환전:** 환율 추가 상승 리스크가 매우 큽니다. 예정된 숙소 예약이나 항공권 결제, 환전은 **지금 당장** 마무리하여 환차손을 방어하세요.
+        * 💻 **전자기기 및 직구:** 수입 단가 인상이 조만간 국내 소비자가에 반영됩니다. 구매를 벼르고 있던 스마트폰, PC 부품은 **오늘 결제하는 것이 가장 저렴**합니다.
+        * 🛒 **대형마트 식료품:** 밀가루, 식용유 등 수입 원자재 의존도가 높은 가공식품은 가격 인상 전 묶음 상품으로 **미리 쟁여두는 것**이 유리합니다.
+        * ⛽ **주유비 및 내구재:** 고환율 파급 효과로 주유소 유가의 도미노 상승이 예상됩니다. 오늘 주유소 방문 시 **가득 채우는 것(만땅)**을 권장합니다.
+        """)
     elif total_score <= 35:
-        st.info("✈️ **해외직구 / 전자기기 / 항공권**\n\n**지출을 당장 미루세요!** 1~2달 뒤 환율 하락 효과가 커머스 및 여행 가격에 직접 반영되어 예산을 대폭 아낄 수 있습니다.")
-        st.info("🛒 **대형마트 생필품 / 밀가루·가공식품**\n\n급하지 않은 품목은 사재기할 필요가 전혀 없습니다. 시장에 공급 가격 인하 압력이 가해질 테니 **필요할 때마다 소량 구매**하세요.")
+        st.success("""
+        **🍏 핵심 지침: 지출을 미루세요 (나중에 사야 이득)**
+        
+        * ✈️ **해외여행 및 환전:** 환율이 하향 안정화되고 있습니다. 급하지 않다면 1~2달 뒤 결제 시 **체감 비용이 크게 낮아질 수 있으니 기다리세요.**
+        * 💻 **전자기기 및 직구:** 원화 가치 상승으로 수입품 가격 인하 여력이 생깁니다. 당장 고장난 게 아니라면 **대형 할인 행사 시점까지 구매를 미루세요.**
+        * 🛒 **대형마트 식료품:** 수입 과일, 육류 등의 가격이 점차 하향 안정화될 전망입니다. 사재기할 필요 없이 **당장 필요한 만큼만 소량 구매**하세요.
+        * ⛽ **주유비 및 내구재:** 국제유가 동향과 맞물려 국내 유가 하락의 시차 효과가 기대됩니다. 가득 채우기보다 **그때그때 필요한 만큼만 주유**하세요.
+        """)
     else:
-        st.info("✈️ **해외직구 / 전자기기 / 항공권**\n\n시장이 평이합니다. 환율 이득을 노리기보다는 이커머스 자체 쿠폰이나 카드사 할인 혜택 타이밍에 맞춰 구매하세요.")
-        st.info("🛒 **대형마트 생필품 / 밀가루·가공식품**\n\n정상적인 소비 주기를 유지하세요. 특이 가격 변동 리스크가 낮습니다.")
+        st.warning("""
+        **⚖️ 핵심 지침: 평소대로 지출하세요 (계획적 소비)**
+        
+        * ✈️ **해외여행 및 환전:** 거시 경제 지표가 정상 범위입니다. 환율 눈치싸움보다는 **항공사 얼리버드 특가나 카드사 혜택**에 맞춰 예약하는 것이 현명합니다.
+        * 💻 **전자기기 및 직구:** 급격한 가격 변동 리스크가 적습니다. 필요에 따라 유연하게 구매하시되, **정기 세일 기간을 활용**하는 정석적인 소비를 유지하세요.
+        * 🛒 **대형마트 식료품:** 물가 급등 리스크가 낮습니다. 평소의 생활비 예산에 맞춰 **정상적인 소비 주기와 패턴**을 유지하시는 것을 추천합니다.
+        * ⛽ **주유비 및 내구재:** 유가 변동성이 크지 않은 시기입니다. 평소 생활 반경 내에서 **가장 저렴한 단골 주유소**를 이용하는 패턴을 권장합니다.
+        """)
 
 st.write("---")
 st.subheader("📈 백엔드 시계열 데이터 트렌드 조회 (AI 학습용 실데이터)")
