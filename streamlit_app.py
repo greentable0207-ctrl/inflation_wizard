@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
 
 # ==========================================
 # 1. 페이지 기본 설정 및 테마 색상 지정
@@ -28,37 +29,62 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 야후 파이낸스 실시간 데이터 로드
+# 2. 네이버 금융 실시간 데이터 웹 스크래핑
 # ==========================================
-@st.cache_data(ttl=600)
-def fetch_real_data():
+@st.cache_data(ttl=60) # 1분 주기로 실시간 갱신
+def fetch_naver_realtime():
     try:
-        ticker = yf.Ticker("KRW=X")
-        # 최근 1개월 데이터 로드
-        hist = ticker.history(period="1mo")
-        if hist.empty:
-            raise ValueError("No data")
+        # 1. 네이버 금융 시장지표 메인에서 실시간 원/달러 환율 추출
+        url = "https://finance.naver.com/marketindex/"
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        closes = hist['Close'].dropna()
-        latest_price = closes.iloc[-1]
+        # USD 환율 추출 (CSS Selector)
+        fx_element = soup.select_one('#exchangeList > li.on > a.head.usd > div > span.value')
+        if not fx_element:
+            raise ValueError("환율 요소를 찾을 수 없습니다.")
+        current_fx = float(fx_element.text.replace(',', ''))
         
-        # 30일 변동성(표준편차) 계산
-        volatility = np.std(closes)
+        # 2. 최근 30영업일(약 한 달 반) 데이터 스크래핑을 통한 변동성(표준편차) 연산
+        close_prices = []
+        for page in range(1, 4): # 1~3페이지(약 30일치) 순회
+            daily_url = f"https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page={page}"
+            res_daily = requests.get(daily_url, timeout=5)
+            soup_daily = BeautifulSoup(res_daily.text, 'html.parser')
+            
+            # 일별 시세 테이블의 '매매기준율' (첫 번째 td 클래스 'num') 추출
+            rows = soup_daily.select('tbody > tr')
+            for row in rows:
+                cols = row.select('td.num')
+                if len(cols) > 0:
+                    price_str = cols[0].text.strip().replace(',', '')
+                    if price_str:
+                        close_prices.append(float(price_str))
         
-        return round(latest_price), round(volatility, 1), False
+        volatility = np.std(close_prices) if close_prices else 13.5
+        
+        return round(current_fx), round(volatility, 1), False
+        
     except Exception as e:
-        # 야후 서버 응답 실패 시 기본값 반환
-        return 1450, 18.0, True
+        # 스크래핑 실패 시 안전을 위한 기본값 반환
+        print(f"Scraping Error: {e}")
+        return 1380, 13.5, True
 
-real_fx, real_vol, is_error = fetch_real_data()
+real_fx, real_vol, is_error = fetch_naver_realtime()
 
 if is_error:
-    st.warning("네트워크 통신 지연으로 인해 기본 시뮬레이션 데이터를 제공합니다.")
+    st.warning("네이버 금융 통신 지연으로 인해 기본 시뮬레이션 데이터를 제공합니다.")
 
 # ==========================================
 # 3. 사이드바 (실시간 지표 입력 시뮬레이터)
 # ==========================================
-st.sidebar.markdown(f"<h2 style='color: {COLOR_NAVY};'>실시간 지표 시뮬레이터</h2>", unsafe_allow_html=True)
+st.sidebar.markdown(f"""
+    <h2 style='color: {COLOR_NAVY};'>실시간 지표 시뮬레이터</h2>
+    <p style='font-size: 0.85rem; color: #64748b; margin-bottom: 20px;'>
+        ※ 네이버 금융(Naver Finance)의 실시간 환율 정보가 자동 세팅됩니다.
+    </p>
+""", unsafe_allow_html=True)
 
 fx = st.sidebar.slider(
     "오늘의 원/달러 환율 (원)", 
@@ -157,7 +183,7 @@ st.markdown("<br><br>", unsafe_allow_html=True)
 col_table, col_chart = st.columns(2)
 
 with col_table:
-    st.markdown(f"<h3 style='color: {COLOR_NAVY};'>4개년 실측치 상관계수 매트릭스</h3>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='color: {COLOR_NAVY};'>4개년 실측치 상관계 매트릭스</h3>", unsafe_allow_html=True)
     
     # 데이터 프레임 생성
     matrix_data = pd.DataFrame({
