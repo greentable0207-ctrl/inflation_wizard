@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
 from datetime import datetime, timedelta
 
 # ==========================================
@@ -81,9 +82,19 @@ def load_and_train_model(history_fx_data):
     model = RandomForestRegressor(n_estimators=50, random_state=42)
     model.fit(X, y)
     
-    return model, df["USD_KRW"].mean(), df["USD_KRW"].std(), df
+    # 💡 [추가] 예측 오차율 계산
+    y_pred = model.predict(X)
+    mae = mean_absolute_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
+    
+    eval_df = pd.DataFrame({
+        "실제 물가변동률(%)": y,
+        "AI 예측 물가변동률(%)": y_pred
+    })
+    
+    return model, df["USD_KRW"].mean(), df["USD_KRW"].std(), df, eval_df, mae, r2
 
-model, fx_mean, fx_std, df_master = load_and_train_model(history_fx_df)
+model, fx_mean, fx_std, df_master, eval_df, model_mae, model_r2 = load_and_train_model(history_fx_df)
 
 # ==========================================
 # 4. 실시간 시장 상황 UI
@@ -212,3 +223,37 @@ chart_data['소비자물가 추이(정규화)'] = (chart_data['CPI'] - chart_dat
 
 st.line_chart(chart_data[['환율 추이(정규화)', '소비자물가 추이(정규화)']])
 st.caption("※ 야후 파이낸스의 실제 과거 환율 데이터와 소비자물가지수를 표준화(Standardized)한 추이 그래프입니다. 환율 충격 발생 후 수 개월 뒤 물가지수가 어떻게 변하는지 AI가 학습한 데이터를 시각화했습니다.")
+
+# ==========================================
+# 8. AI 모델 성능 및 오차율(Scatter Plot) 시각화
+# ==========================================
+st.write("---")
+st.subheader("🎯 AI 예측 모델 오차율 분석 (실제 vs 예측)")
+
+col_err1, col_err2 = st.columns([1, 2])
+
+with col_err1:
+    st.markdown("### 예측 성능 지표")
+    st.metric(
+        label="평균 절대 오차 (MAE)", 
+        value=f"{model_mae:.4f} %p", 
+        delta="0에 가까울수록 정확함", 
+        delta_color="off"
+    )
+    st.metric(
+        label="모델 설명력 (R² Score)", 
+        value=f"{model_r2*100:.1f} %", 
+        delta="100%에 가까울수록 완벽함", 
+        delta_color="off"
+    )
+    st.info("💡 **오차율 해석 가이드:**\n\n모델의 예측값과 실제 발생한 물가 변동률 간의 차이를 나타냅니다. 우측 산포도에서 점들이 우상향하는 좁은 띠 형태로 모여 있을수록 정확하게 예측했다는 의미입니다.")
+    
+with col_err2:
+    # Streamlit 내장 산포도 차트 활용
+    st.scatter_chart(
+        eval_df,
+        x="실제 물가변동률(%)",
+        y="AI 예측 물가변동률(%)",
+        color="#3B82F6",
+        height=300
+    )
